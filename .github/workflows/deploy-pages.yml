@@ -1,18 +1,18 @@
-name: Expo Web'i GitHub Pages'a Yayinla
+name: Expo Web'i GitHub Pages'a Yayınla
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
+  group: github-pages
   cancel-in-progress: true
 
 jobs:
@@ -21,36 +21,37 @@ jobs:
 
     steps:
       - name: Kaynak kodu al
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Node.js kur
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
 
-      - name: Bagimliliklari kur
+      - name: Bağımlılıkları kur
         run: npm ci
 
-      - name: Expo web ciktisini olustur
+      - name: Expo web çıktısını oluştur
         run: npm run predeploy
 
-      - name: GitHub Pages'i yapilandir
+      - name: GitHub Pages'i yapılandır
         uses: actions/configure-pages@v5
 
-      - name: Web ciktisini yukle
+      - name: Web çıktısını yükle
         uses: actions/upload-pages-artifact@v4
         with:
           path: dist
 
   deploy:
     needs: build
+    runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
 
     steps:
-      - name: GitHub Pages'a yayinla
+      - name: GitHub Pages'a yayınla
         id: deployment
         uses: actions/deploy-pages@v4
