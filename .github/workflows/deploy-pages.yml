@@ -1,0 +1,56 @@
+name: Expo Web'i GitHub Pages'a Yayinla
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Bagimliliklari kur
+        run: npm ci
+
+      - name: Expo web ciktisini olustur
+        run: npm run predeploy
+
+      - name: GitHub Pages'i yapilandir
+        uses: actions/configure-pages@v5
+
+      - name: Web ciktisini yukle
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: GitHub Pages'a yayinla
+        id: deployment
+        uses: actions/deploy-pages@v4

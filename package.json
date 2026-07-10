@@ -2,7 +2,6 @@
   "name": "ek16logbookapp",
   "main": "expo-router/entry",
   "version": "1.0.0",
-"homepage": "https://ovarthy-bot.github.io/Ek-16_v2",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",

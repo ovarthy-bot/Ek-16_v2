@@ -24,10 +24,11 @@
     },
     "web": {
       "favicon": "./assets/images/favicon.png",
-      "bundler": "metro"
+      "bundler": "metro",
+      "output": "single"
     },
     "experiments": {
-      "baseUrl": "/Ek16"
+      "baseUrl": "/Ek-16_v2"
     }
   }
 }
