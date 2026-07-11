@@ -436,6 +436,20 @@ function DatePickerField({ value, onChange, disabled }: DatePickerFieldProps) {
   );
 }
 
+function normalizeSearchText(value: unknown): string {
+  return String(value ?? '')
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ı/g, 'i')
+    .trim();
+}
+
+type SaveFeedback = {
+  type: 'info' | 'success' | 'error';
+  message: string;
+} | null;
+
 export default function App() {
   const [selectedFormGroup, setSelectedFormGroup] = useState<number>(1);
   const [selectedTask, setSelectedTask] = useState<number>(1);
@@ -458,12 +472,14 @@ export default function App() {
   const [selectedPdfMimeType, setSelectedPdfMimeType] = useState<string>('application/pdf');
   const [selectedPdfSize, setSelectedPdfSize] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [saveFeedback, setSaveFeedback] = useState<SaveFeedback>(null);
 
   const tasksForSelectedGroup = useMemo(
     () => TASKS_DATA.filter((task) => task.group === selectedFormGroup),
     [selectedFormGroup],
   );
-  const records = useMemo(
+  const groupRecords = useMemo(
     () => allRecords
       .filter((record) => record.formGroup === selectedFormGroup)
       .sort((a, b) => {
@@ -472,6 +488,23 @@ export default function App() {
       }),
     [allRecords, selectedFormGroup],
   );
+
+  const records = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(searchQuery);
+    if (!normalizedQuery) return groupRecords;
+
+    return groupRecords.filter((record) => {
+      const referenceLabel = getReferenceType(record.referenceType).label;
+      const searchableText = normalizeSearchText([
+        record.woNumber,
+        referenceLabel,
+        record.referenceType,
+        record.description,
+      ].join(' '));
+
+      return searchableText.includes(normalizedQuery);
+    });
+  }, [groupRecords, searchQuery]);
   const isEditing = Boolean(editingId);
   const isBusy = fetching || saving || uploadingPdf || Boolean(deletingId);
   const selectedReferenceType = getReferenceType(referenceType);
@@ -680,28 +713,37 @@ export default function App() {
   };
 
   const handleSave = async () => {
+    setSaveFeedback({ type: 'info', message: 'Kayıt bilgileri kontrol ediliyor…' });
+
     const trimmedWo = woNumber.trim();
     const trimmedRef = refNumber.trim();
     const trimmedDescription = description.trim();
 
     if (!date.trim() || !trimmedWo || !trimmedRef || !trimmedDescription) {
-      Alert.alert('Eksik bilgi', 'Tarih, W/O numarası, referans ve açıklama alanlarını doldurun.');
+      const message = 'Tarih, W/O numarası, referans ve açıklama alanlarını doldurun.';
+      setSaveFeedback({ type: 'error', message });
+      Alert.alert('Eksik bilgi', message);
       return;
     }
 
     const referenceError = validateReferences(trimmedRef);
     if (referenceError) {
+      setSaveFeedback({ type: 'error', message: referenceError });
       Alert.alert('Referans kuralı', referenceError);
       return;
     }
 
     if (isTtStampRequired(referenceType) && !ttStamped) {
-      Alert.alert('TT Sicil Kaşesi gerekli', 'Bakım kartı veya NRC’ye göre yapılan işlemde aday personele ait TT Sicil Kaşesi bulunmalıdır.');
+      const message = 'Bakım kartı veya NRC’ye göre yapılan işlemde aday personele ait TT Sicil Kaşesi bulunmalıdır.';
+      setSaveFeedback({ type: 'error', message });
+      Alert.alert('TT Sicil Kaşesi gerekli', message);
       return;
     }
 
     if (!selectedPdfData && !uploadedPdfUrl) {
-      Alert.alert('Taranmış doküman gerekli', 'İşlemin kontrol edilebilmesi için ilgili dokümanın PDF kopyasını ekleyin.');
+      const message = 'İşlemin kontrol edilebilmesi için ilgili dokümanın PDF kopyasını ekleyin.';
+      setSaveFeedback({ type: 'error', message });
+      Alert.alert('Taranmış doküman gerekli', message);
       return;
     }
 
@@ -729,6 +771,7 @@ export default function App() {
     }
 
     setSaving(true);
+    setSaveFeedback({ type: 'info', message: 'Kayıt Google Drive ve Google Sheets’e gönderiliyor…' });
     try {
       const result = await postToGoogleScript(payload);
       if (result.status === 'success') {
@@ -736,14 +779,20 @@ export default function App() {
           [TT_STAMP_STORAGE_KEY, ttStamped ? 'true' : 'false'],
           [REFERENCE_TYPE_STORAGE_KEY, referenceType],
         ]).catch((error) => console.log('Form ayarları kaydedilemedi:', error));
-        Alert.alert('İşlem başarılı', result.message || (isEditing ? 'Kayıt güncellendi.' : 'Yeni kayıt eklendi.'));
+        const message = result.message || (isEditing ? 'Kayıt güncellendi.' : 'Yeni kayıt eklendi.');
+        setSaveFeedback({ type: 'success', message });
+        Alert.alert('İşlem başarılı', message);
         resetForm();
         await fetchRecords();
       } else {
-        Alert.alert('İşlem başarısız', result.message || 'Google Script işlemi tamamlayamadı.');
+        const message = result.message || 'Google Script işlemi tamamlayamadı.';
+        setSaveFeedback({ type: 'error', message });
+        Alert.alert('İşlem başarısız', message);
       }
     } catch (error: any) {
-      Alert.alert('Bağlantı hatası', error?.message || 'Google Drive ile bağlantı kurulamadı.');
+      const message = error?.message || 'Google Drive ile bağlantı kurulamadı.';
+      setSaveFeedback({ type: 'error', message });
+      Alert.alert('Bağlantı hatası', message);
     } finally {
       setSaving(false);
     }
@@ -1160,6 +1209,22 @@ export default function App() {
           )}
         </TouchableOpacity>
 
+        {saveFeedback && (
+          <View style={[
+            styles.saveFeedback,
+            saveFeedback.type === 'success' && styles.saveFeedbackSuccess,
+            saveFeedback.type === 'error' && styles.saveFeedbackError,
+          ]}>
+            <Text style={[
+              styles.saveFeedbackText,
+              saveFeedback.type === 'success' && styles.saveFeedbackTextSuccess,
+              saveFeedback.type === 'error' && styles.saveFeedbackTextError,
+            ]}>
+              {saveFeedback.message}
+            </Text>
+          </View>
+        )}
+
         {isEditing && (
           <TouchableOpacity style={styles.secondaryButton} onPress={resetForm} disabled={saving}>
             <Text style={styles.secondaryButtonText}>Düzenlemeyi iptal et</Text>
@@ -1178,6 +1243,33 @@ export default function App() {
           <Text style={styles.listGroupBadgeText}>{selectedFormGroup === 5 ? 'Optional form' : `Form ${selectedFormGroup}/5`}</Text>
         </View>
       </View>
+
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="W/O, referans türü veya teknik açıklama ara"
+          placeholderTextColor={colors.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          accessibilityLabel="Mevcut kayıtlarda ara"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity
+            style={styles.searchClearButton}
+            onPress={() => setSearchQuery('')}
+            accessibilityRole="button"
+            accessibilityLabel="Aramayı temizle"
+          >
+            <Text style={styles.searchClearText}>Temizle</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      {searchQuery.trim().length > 0 && (
+        <Text style={styles.searchResultText}>{records.length} / {groupRecords.length} kayıt bulundu</Text>
+      )}
     </View>
   );
 
@@ -1196,8 +1288,8 @@ export default function App() {
                 <ActivityIndicator color={colors.primary} />
               ) : (
                 <>
-                  <Text style={styles.emptyTitle}>Bu form grubu için kayıt yok</Text>
-                  <Text style={styles.emptyText}>Yeni kayıt eklediğinizde burada listelenecek.</Text>
+                  <Text style={styles.emptyTitle}>{searchQuery.trim() ? 'Aramayla eşleşen kayıt yok' : 'Bu form grubu için kayıt yok'}</Text>
+                  <Text style={styles.emptyText}>{searchQuery.trim() ? 'Farklı bir W/O, referans türü veya açıklama deneyin.' : 'Yeni kayıt eklediğinizde burada listelenecek.'}</Text>
                 </>
               )}
             </View>
@@ -1324,16 +1416,16 @@ const styles = StyleSheet.create({
   },
   twoColumnRow: {
     position: 'relative',
-    zIndex: 5000,
-    elevation: 5000,
+    zIndex: 2,
+    elevation: 2,
     overflow: 'visible',
     flexDirection: 'row',
     gap: 12,
   },
   twoColumnItem: {
     position: 'relative',
-    zIndex: 5000,
-    elevation: 5000,
+    zIndex: 2,
+    elevation: 2,
     overflow: 'visible',
     flex: 1,
   },
@@ -1543,6 +1635,72 @@ const styles = StyleSheet.create({
     color: colors.primaryDark,
     fontSize: 14,
     fontWeight: '900',
+  },
+  saveFeedback: {
+    marginTop: 10,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  saveFeedbackSuccess: {
+    backgroundColor: colors.successSoft,
+    borderColor: '#BBF7D0',
+  },
+  saveFeedbackError: {
+    backgroundColor: colors.dangerSoft,
+    borderColor: '#FECACA',
+  },
+  saveFeedbackText: {
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  saveFeedbackTextSuccess: {
+    color: colors.success,
+  },
+  saveFeedbackTextError: {
+    color: colors.danger,
+  },
+  searchContainer: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 15,
+    marginBottom: 8,
+    paddingLeft: 14,
+    paddingRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    minHeight: 48,
+    color: colors.text,
+    fontSize: 14,
+    outlineStyle: 'none' as any,
+  },
+  searchClearButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceAlt,
+  },
+  searchClearText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  searchResultText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 10,
+    marginLeft: 2,
   },
   primaryButton: {
     position: 'relative',
