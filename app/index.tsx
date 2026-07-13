@@ -406,7 +406,12 @@ function pickBestCandidate(
   context: SelectionContext,
   sectionSelected: LogbookRecord[],
 ): LogbookRecord | null {
-  const eligible = candidates.filter((record) => !context.selectedIdentities.has(recordIdentity(record)));
+  const eligible = candidates.filter(
+    (record) =>
+      Boolean(record.dateIso) &&
+      !context.selectedIdentities.has(recordIdentity(record)) &&
+      !context.globalDates.has(record.dateIso),
+  );
   if (eligible.length === 0) return null;
 
   return [...eligible].sort((a, b) => {
@@ -417,6 +422,95 @@ function pickBestCandidate(
     if (b.dateIso) return 1;
     return recordIdentity(a).localeCompare(recordIdentity(b));
   })[0];
+}
+
+function technicalRecordScore(record: LogbookRecord): number {
+  let score = 0;
+  if (record.woNumber.trim()) score += 4;
+  if (record.refNumber.trim()) score += 3;
+  if (record.description.trim()) score += 3;
+  if (record.pdfUrl?.trim()) score += 1;
+  return score;
+}
+
+function uniqueDatedRecordCount(records: LogbookRecord[]): number {
+  return new Set(records.map((record) => record.dateIso).filter(Boolean)).size;
+}
+
+/**
+ * Her zorunlu iş türüne mümkünse farklı bir gün atar.
+ * Aynı gün için birden fazla iş varsa, eşleştirme diğer iş türlerini alternatif
+ * günlere taşıyarak maksimum iş türü kapsamını korumaya çalışır.
+ */
+function matchRequiredTasksToUniqueDates(records: LogbookRecord[]): Map<number, LogbookRecord> {
+  const requiredTaskIds = REQUIRED_SECTION_DEFINITIONS.flatMap((section) => section.requiredTaskIds);
+  const candidatesByTask = new Map<number, LogbookRecord[]>();
+
+  requiredTaskIds.forEach((taskId) => {
+    const bestRecordByDate = new Map<string, LogbookRecord>();
+
+    records
+      .filter((record) => record.taskNo === taskId && Boolean(record.dateIso))
+      .forEach((record) => {
+        const current = bestRecordByDate.get(record.dateIso);
+        if (
+          !current ||
+          technicalRecordScore(record) > technicalRecordScore(current) ||
+          (technicalRecordScore(record) === technicalRecordScore(current) &&
+            recordIdentity(record).localeCompare(recordIdentity(current)) < 0)
+        ) {
+          bestRecordByDate.set(record.dateIso, record);
+        }
+      });
+
+    candidatesByTask.set(
+      taskId,
+      [...bestRecordByDate.values()].sort((a, b) => {
+        const qualityDifference = technicalRecordScore(b) - technicalRecordScore(a);
+        if (qualityDifference !== 0) return qualityDifference;
+        return a.dateIso.localeCompare(b.dateIso);
+      }),
+    );
+  });
+
+  const taskOrder = [...requiredTaskIds].sort((a, b) => {
+    const candidateDifference =
+      (candidatesByTask.get(a)?.length || 0) - (candidatesByTask.get(b)?.length || 0);
+    return candidateDifference || a - b;
+  });
+
+  const dateOwner = new Map<string, number>();
+  const taskSelection = new Map<number, LogbookRecord>();
+
+  const tryAssign = (taskId: number, visitedDates: Set<string>, visitedTasks: Set<number>): boolean => {
+    if (visitedTasks.has(taskId)) return false;
+    visitedTasks.add(taskId);
+
+    const candidates = candidatesByTask.get(taskId) || [];
+    for (const candidate of candidates) {
+      const candidateDate = candidate.dateIso;
+      if (!candidateDate || visitedDates.has(candidateDate)) continue;
+      visitedDates.add(candidateDate);
+
+      const currentOwner = dateOwner.get(candidateDate);
+      if (
+        currentOwner === undefined ||
+        tryAssign(currentOwner, visitedDates, visitedTasks)
+      ) {
+        dateOwner.set(candidateDate, taskId);
+        taskSelection.set(taskId, candidate);
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  taskOrder.forEach((taskId) => {
+    tryAssign(taskId, new Set<string>(), new Set<number>());
+  });
+
+  return taskSelection;
 }
 
 function createDraft(records: LogbookRecord[]): {
@@ -434,19 +528,18 @@ function createDraft(records: LogbookRecord[]): {
     selected: [] as LogbookRecord[],
   }));
 
-  // 1. Her zorunlu iş türünden en az bir adet seçilir.
+  // 1. Her zorunlu iş türünden en az bir adet, mükerrer gün oluşturmadan seçilir.
+  const requiredCoverageSelections = matchRequiredTasksToUniqueDates(uniqueRecords);
   workingRequired.forEach((section) => {
     section.definition.requiredTaskIds.forEach((taskId) => {
-      const candidate = pickBestCandidate(
-        section.candidates.filter((record) => record.taskNo === taskId),
-        context,
-        section.selected,
-      );
-      if (candidate) {
-        section.selected.push(candidate);
-        registerSelection(candidate, context);
-      }
+      const candidate = requiredCoverageSelections.get(taskId);
+      if (candidate) section.selected.push(candidate);
     });
+  });
+
+  // Eşleştirme bittikten sonra seçimler topluca kaydedilir; böylece aynı gün hiçbir grupta tekrar kullanılamaz.
+  workingRequired.forEach((section) => {
+    section.selected.forEach((record) => registerSelection(record, context));
   });
 
   // 2. Gruplar sırayla doldurulur. Böylece ilk grup bütün iyi tarihleri tek başına tüketmez.
@@ -471,7 +564,7 @@ function createDraft(records: LogbookRecord[]): {
     missingTaskIds: section.definition.requiredTaskIds.filter(
       (taskId) => !section.selected.some((record) => record.taskNo === taskId),
     ),
-    availableCount: section.candidates.length,
+    availableCount: uniqueDatedRecordCount(section.candidates),
   }));
 
   // 3. Optional işlemler birbirinden ayrı taslaklarda gösterilir ve zorunlu kayıtları tüketmez.
@@ -490,7 +583,7 @@ function createDraft(records: LogbookRecord[]): {
       ...definition,
       records: sortRecordsChronologically(selected),
       missingTaskIds: [],
-      availableCount: candidates.length,
+      availableCount: uniqueDatedRecordCount(candidates),
     };
   }).filter((section) => section.availableCount > 0);
 
@@ -870,8 +963,8 @@ export default function App() {
             <Text style={styles.draftSectionTitle}>{section.title}</Text>
             <Text style={styles.draftSectionSubtitle}>
               {section.optional
-                ? `${section.records.length} kayıt seçildi · Optional, minimum zorunluluk uygulanmaz.`
-                : `${section.records.length}/${section.targetCount} kayıt · Mevcut uygun kayıt: ${section.availableCount}`}
+                ? `${section.records.length} kayıt seçildi · ${section.availableCount} benzersiz gün mevcut · Optional, minimum zorunluluk uygulanmaz.`
+                : `${section.records.length}/${section.targetCount} kayıt · Mevcut benzersiz gün: ${section.availableCount}`}
             </Text>
           </View>
           <View style={[styles.statusBadge, complete ? styles.statusBadgeSuccess : styles.statusBadgeDanger]}>
@@ -1139,7 +1232,7 @@ export default function App() {
 
           <View style={styles.noteBox}>
             <Text style={styles.noteText}>
-              Not: Uygulama tarih veya iş bilgisi üretmez. Eksik kayıt bulunursa boş satır ve uyarı gösterir; böylece OJT taslağı gerçek bakım kayıtlarıyla izlenebilir kalır.
+              Not: OJT taslağında aynı tarih yalnızca bir kez kullanılır. Aynı gün kaydedilmiş birden fazla iş arasından algoritmanın en uygun bulduğu tek kayıt seçilir. Uygulama tarih veya iş bilgisi üretmez; eksik kayıt bulunursa boş satır ve uyarı gösterir.
             </Text>
           </View>
         </ScrollView>
